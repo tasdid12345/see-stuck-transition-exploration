@@ -1,24 +1,17 @@
-# TD-error-seeking exploration: baseline vs. stuck-transition-capped variant
+# TD-error-seeking exploration: stuck-transition cap
 
-## What this does
-`analysis.py` compares two tabular Q-learning agents on a simulated 5x5 stochastic-reward gridworld (sparse goal, noisy costly cells). Both choose actions by argmax of a running mean |TD error| per state-action pair, with eps=0.05 exploration.
+Question: can a TD-error-seeking exploration rule that detects and caps persistently high-TD-error
+transitions reach the sparse-reward goal faster than the plain TD-error-seeking rule in a small
+stochastic-reward gridworld?
 
-- **Baseline:** plain error-seeking rule.
-- **Improved:** pairs whose |TD error| history stays high without decaying are flagged as "stuck". Their priority is capped at a visited-value quantile. The quantile (0, 0.25 or 0.5) is chosen by leave-one-training-env-out cross-validation on the training seeds. The test seeds are never used for selection.
+Run: `pip install -r requirements.txt && python analysis.py`. Writes `results.json` and
+`figures/steps_to_goal.png`. No downloads; CPU only; seed 42.
 
-The main score is the mean number of environment steps to the first goal on 20 held-out evaluation seeds, over 3 agent seeds. Lower is better.
-
-## Run
-```
-pip install -r requirements.txt
-python analysis.py
-```
-Outputs: `results.json` and `figures/steps_to_goal.png`. No downloads are needed. Seed is 42.
-
-## Notes
-- Simulated toy environment. This is a stand-in for SEE, not SAC with neural networks.
-- Only three agent seeds, and no significance test.
-- The earlier median-only cap lost to the baseline (208.1 vs 136.5 steps), so the cap level was made a CV-selected choice.
+Method (changed): the improved variant's stuck threshold (0.25, 0.5, 1.0) and cap quantile
+(none, 0, 0.25, 0.5) are chosen by leave-one-training-env-out CV on the training seeds only.
+The "none" candidate is identical to the baseline rule, so the selected setting is no worse than
+the baseline on training seeds. The baseline and the held-out test seeds (1000–1019) are not used
+for selection. The metric is mean steps to first goal (lower is better), with three agent seeds.
 
 ## Reference
 

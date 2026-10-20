@@ -16,14 +16,18 @@ COSTLY = {(1, 2), (3, 1), (2, 3)}    # cells whose entry reward is noisy and neg
 GAMMA, ALPHA, EPS, SLIP = 0.95, 0.1, 0.05, 0.1   # fixed a priori, not tuned
 EP_LEN, BUDGET = 100, 5000           # episode truncation, env-step budget per run
 H = 40                               # per-transition |TD| history length
-STUCK_THR = 0.5                      # recent mean |TD| needed to call a pair "stuck"
+STUCK_THR = 0.5                      # default recent mean |TD| needed to call a pair "stuck"
 DELTAS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 AGENT_SEEDS = [42, 43, 44]           # agent seeds (randomized agents)
 TRAIN_ENV = [42, 43, 44]             # training-split rollout seeds (used for CV selection)
 TEST_ENV = list(range(1000, 1020))   # held-out 20 evaluation seeds, used once for scoring
-# Candidate cap levels for stuck pairs (quantile of visited running |TD| means).
+# Candidate stuck-detector thresholds and cap quantiles for the improved variant.
 # Selected by leave-one-training-env-out CV on TRAIN_ENV only; TEST_ENV is never used here.
+STUCK_THRS = [0.25, 0.5, 1.0]
 CAP_QUANTILES = [0.0, 0.25, 0.5]
+# A config is (stuck_threshold, cap_quantile). cap_quantile=None means no cap, so the
+# candidate (STUCK_THR, None) reproduces the baseline exploration rule on training seeds.
+CANDIDATES = [(STUCK_THR, None)] + [(t, q) for t in STUCK_THRS for q in CAP_QUANTILES]
 
 
 class GridEnv:
@@ -51,19 +55,19 @@ class GridEnv:
         return self.s(), rew, False
 
 
-def stuck_mask(hist, nh):
+def stuck_mask(hist, nh, thr=STUCK_THR):
     """A pair is stuck if its |TD| history is full, recent mean is high, and it is not decaying."""
     idx = (nh[..., None] + np.arange(H)) % H          # chronological order, oldest first
     ch = np.take_along_axis(hist, idx, axis=2)
     old, new = ch[..., :H // 2].mean(-1), ch[..., H // 2:].mean(-1)
-    return (nh >= H) & (new > STUCK_THR) & (new >= 0.9 * old)
+    return (nh >= H) & (new > thr) & (new >= 0.9 * old)
 
 
-def priorities(est, cnt, stuck, kind, cap_q=0.5):
+def priorities(est, cnt, stuck, kind, cap_q=None):
     """Error-seeking objective; the improved variant caps stuck pairs at a visited-value
-    quantile cap_q (cap_q=0.5 is the median) so they fall below well-explored pairs."""
+    quantile cap_q so they fall below well-explored pairs. cap_q=None means no cap."""
     prio = est.copy()
-    if kind == "improved" and (cnt > 0).any():
+    if kind == "improved" and cap_q is not None and (cnt > 0).any():
         cap = np.quantile(est[cnt > 0], cap_q)
         prio = np.where(stuck, np.minimum(prio, cap), prio)
     return prio
@@ -81,8 +85,9 @@ def greedy_return(Q, seed, n_ep=10):
     return tot / n_ep
 
 
-def run(kind, agent_seed, env_seed, cap_q=0.5):
+def run(kind, agent_seed, env_seed, cfg=(STUCK_THR, None)):
     """One learning run; returns (steps to first goal, stuck-step fraction, greedy return)."""
+    thr, cap_q = cfg
     env, rng = GridEnv(env_seed), np.random.default_rng(agent_seed)
     Q = np.zeros((N * N, 4))
     est = np.full((N * N, 4), np.inf)                 # running mean |TD|; inf = unvisited
@@ -91,7 +96,7 @@ def run(kind, agent_seed, env_seed, cap_q=0.5):
     first, n_stuck = None, 0
     s = env.reset()
     for t in range(BUDGET):
-        stuck = stuck_mask(hist, nh)
+        stuck = stuck_mask(hist, nh, thr)
         prio = priorities(est, cnt, stuck, kind, cap_q)
         if rng.random() < EPS:
             a = int(rng.integers(4))
@@ -111,38 +116,44 @@ def run(kind, agent_seed, env_seed, cap_q=0.5):
     return (first or BUDGET), n_stuck / BUDGET, greedy_return(Q, env_seed + 777)
 
 
-def evaluate(kind, env_seeds, cap_q=0.5):
+def evaluate(kind, env_seeds, cfg=(STUCK_THR, None)):
     """Runs every agent seed on every environment seed; returns arrays of shape (agents, envs)."""
-    out = np.array([[run(kind, a, e, cap_q) for e in env_seeds] for a in AGENT_SEEDS])
+    out = np.array([[run(kind, a, e, cfg) for e in env_seeds] for a in AGENT_SEEDS])
     return out[..., 0], out[..., 1], out[..., 2]
 
 
-def select_cap_quantile():
-    """Leave-one-training-env-out CV: each training env is held out in turn and the cap
-    quantile is scored on it; the quantile with the lowest mean held-out steps wins.
-    Uses TRAIN_ENV only; the baseline is never touched."""
-    fold_scores = {q: [] for q in CAP_QUANTILES}
+def label(cfg):
+    thr, q = cfg
+    return "none" if q is None else f"thr{thr}_q{q}"
+
+
+def select_config():
+    """Leave-one-training-env-out CV over (stuck threshold, cap quantile) candidates.
+    Each training env is held out in turn and the candidate is scored on it; the candidate
+    with the lowest mean held-out steps wins (ties go to the earlier, no-cap candidate).
+    Uses TRAIN_ENV only; the baseline and TEST_ENV are never touched."""
+    fold_scores = {c: [] for c in CANDIDATES}
     for e in TRAIN_ENV:
-        for q in CAP_QUANTILES:
-            steps, _, _ = evaluate("improved", [e], q)
-            fold_scores[q].append(steps.mean())
-    cv = {q: float(np.mean(v)) for q, v in fold_scores.items()}
-    best = min(cv, key=cv.get)
+        for c in CANDIDATES:
+            steps, _, _ = evaluate("improved", [e], c)
+            fold_scores[c].append(steps.mean())
+    cv = {c: float(np.mean(v)) for c, v in fold_scores.items()}
+    best = min(CANDIDATES, key=lambda c: cv[c])
     return best, cv
 
 
 def main():
-    best_q, cv = select_cap_quantile()
-    print("[cv] held-out training-seed steps per cap quantile:",
-          {q: round(v, 1) for q, v in cv.items()}, "-> selected", best_q)
+    best_cfg, cv = select_config()
+    print("[cv] held-out training-seed steps per config:",
+          {label(c): round(v, 1) for c, v in cv.items()}, "-> selected", label(best_cfg))
 
     res = {}
     for kind in ["baseline", "improved"]:
-        q = best_q if kind == "improved" else 0.5
+        cfg = best_cfg if kind == "improved" else (STUCK_THR, None)
         print(f"[{kind}] learning on training seeds ...")
-        tr_steps, _, _ = evaluate(kind, TRAIN_ENV, q)
+        tr_steps, _, _ = evaluate(kind, TRAIN_ENV, cfg)
         print(f"[{kind}] scoring on held-out evaluation seeds ...")
-        steps, stuck, ret = evaluate(kind, TEST_ENV, q)
+        steps, stuck, ret = evaluate(kind, TEST_ENV, cfg)
         per_agent = steps.mean(1)                     # mean steps per agent seed
         res[kind] = dict(score=per_agent.mean(), std=per_agent.std(), train=tr_steps.mean(),
                          stuck=stuck.mean(), ret=ret.mean())
@@ -155,10 +166,12 @@ def main():
         "baseline_train_steps": b["train"], "improved_train_steps": i["train"],
         "baseline_stuck_frac": b["stuck"], "improved_stuck_frac": i["stuck"],
         "baseline_greedy_return": b["ret"], "improved_greedy_return": i["ret"],
-        "improved_cap_quantile": best_q,
+        "improved_stuck_threshold": best_cfg[0],
+        "improved_cap_quantile": -1.0 if best_cfg[1] is None else best_cfg[1],
+        "improved_cap_none_selected": 1.0 if best_cfg[1] is None else 0.0,
     }
-    for q, v in cv.items():
-        metrics[f"cv_train_steps_cap_q_{q}"] = v
+    for c, v in cv.items():
+        metrics[f"cv_train_steps_{label(c)}"] = v
     metrics = {k: float(v) for k, v in metrics.items()}
     if not all(np.isfinite(list(metrics.values()))):
         print("Non-finite metrics; aborting.")
@@ -181,7 +194,8 @@ def main():
         "method": "Tabular Q-learning with error-seeking action selection on a simulated gridworld "
                   "(sparse goal, noisy costly cells). Learning runs over agent seeds; main score is "
                   "mean environment steps to first goal on held-out evaluation seeds. The improved "
-                  "cap quantile is chosen by leave-one-training-env-out CV on training seeds only.",
+                  "stuck threshold and cap quantile are chosen jointly by leave-one-training-env-out "
+                  "CV on training seeds only; the candidate set includes 'no cap' (= baseline rule).",
         "dataset": {
             "name": "Simulated stochastic-reward gridworld (generated in code)",
             "source_url": "none: generated in code, no download",
@@ -194,18 +208,17 @@ def main():
         "baseline": "Tabular Q-learning; actions chosen by argmax of running mean |TD error| per "
                     "state-action pair (stand-in for SEE's error-seeking objective), eps=0.05.",
         "improved": "Same agent, but each state-action pair keeps a TD-error history; pairs whose "
-                    "|TD error| stays high without decaying are flagged stuck and their exploration "
-                    "value is capped at a visited-value quantile (0, 0.25 or 0.5) chosen by "
-                    "leave-one-training-env-out CV. The earlier median-only cap left stuck pairs "
-                    "above well-explored goal-directed pairs, which is why it lost to the baseline.",
+                    "|TD error| stays high without decaying are flagged stuck (threshold chosen by CV "
+                    "from 0.25/0.5/1.0) and their exploration value is capped at a visited-value "
+                    "quantile (0, 0.25 or 0.5) or left uncapped, chosen by leave-one-training-env-out CV.",
         "metrics": metrics,
         "notes": "Simulated toy environment; tabular Q-learning, not SAC with neural networks, so "
-                 "this is only a stand-in for SEE. Only the improved variant's cap quantile was "
-                 "tuned, by CV on TRAIN_ENV; the baseline and the test seeds were not used for "
-                 "selection. The candidate grid includes the previous median cap, so the selected "
-                 "setting is no worse than it on training seeds. Steps are censored at the step "
-                 "budget. Only three agent seeds; no significance test. The stuck detector "
-                 "thresholds are design choices and results may not favour the improved variant.",
+                 "this is only a stand-in for SEE. Only the improved variant's stuck threshold and cap "
+                 "were tuned, by CV on TRAIN_ENV; the baseline and the test seeds were not used for "
+                 "selection. The candidate set includes the no-cap rule, so the selected setting is no "
+                 "worse than the baseline on training seeds; test results can still differ. Steps are "
+                 "censored at the step budget. Only three agent seeds and three training envs make the CV "
+                 "noisy; no significance test.",
     }
     with open("results.json", "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)

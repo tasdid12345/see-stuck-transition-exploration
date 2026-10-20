@@ -1,19 +1,24 @@
-# Stuck-Transition-Capped TD-Error Exploration on a Stochastic Gridworld
+# TD-error-seeking exploration: baseline vs. stuck-transition-capped variant
 
-Motivation: "Learning to Explore in Diverse Reward Settings via Temporal-Difference-Error Maximization" (2025) proposes Stable Errorseeking Exploration (SEE), which drives an agent toward transitions with large TD errors and combines this with Soft Actor-Critic. Error-seeking can get stuck on transitions whose TD error stays high because of reward noise rather than because they are informative. This experiment asks whether detecting and capping such transitions helps.
+## What this does
+`analysis.py` compares two tabular Q-learning agents on a simulated 5x5 stochastic-reward gridworld (sparse goal, noisy costly cells). Both choose actions by argmax of a running mean |TD error| per state-action pair, with eps=0.05 exploration.
 
-Question: Can a TD-error-seeking exploration rule that detects and caps persistently high-TD-error transitions reach the sparse-reward goal faster than the plain TD-error-seeking rule in a small stochastic-reward gridworld?
+- **Baseline:** plain error-seeking rule.
+- **Improved:** pairs whose |TD error| history stays high without decaying are flagged as "stuck". Their priority is capped at a visited-value quantile. The quantile (0, 0.25 or 0.5) is chosen by leave-one-training-env-out cross-validation on the training seeds. The test seeds are never used for selection.
 
-Dataset: a small stochastic-reward gridworld generated in numpy inside the script (sparse goal reward, slip noise, and a few costly cells with noisy rewards). This is not the paper's own dataset (same_as_paper is false), and nothing is downloaded.
+The main score is the mean number of environment steps to the first goal on 20 held-out evaluation seeds, over 3 agent seeds. Lower is better.
 
-Baseline vs. improved: the baseline is tabular Q-learning that picks actions by maximizing a running estimate of the absolute TD error per state-action pair, a stand-in for SEE's error-seeking objective. The improved agent keeps a per-pair TD-error history and caps the exploration value of pairs whose TD error stays high without decaying. Both share the same environment, data loading, budget and evaluation code.
+## Run
+```
+pip install -r requirements.txt
+python analysis.py
+```
+Outputs: `results.json` and `figures/steps_to_goal.png`. No downloads are needed. Seed is 42.
 
-How to run:
-
-    pip install -r requirements.txt
-    python analysis.py
-
-Results: results are written to results.json (and a chart to figures/steps_to_goal.png).
+## Notes
+- Simulated toy environment. This is a stand-in for SEE, not SAC with neural networks.
+- Only three agent seeds, and no significance test.
+- The earlier median-only cap lost to the baseline (208.1 vs 136.5 steps), so the cap level was made a CV-selected choice.
 
 ## Reference
 

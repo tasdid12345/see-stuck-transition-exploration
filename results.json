@@ -1,0 +1,31 @@
+{
+  "question": "Can a TD-error-seeking exploration rule that detects and caps persistently high-TD-error transitions reach the sparse-reward goal faster than the plain TD-error-seeking rule in a small stochastic-reward gridworld?",
+  "method": "Tabular Q-learning with error-seeking action selection on a simulated gridworld (sparse goal, noisy costly cells). Learning runs over agent seeds; main score is mean environment steps to first goal on held-out evaluation seeds.",
+  "dataset": {
+    "name": "Simulated stochastic-reward gridworld (generated in code)",
+    "source_url": "none: generated in code, no download",
+    "n_rows": 23,
+    "n_train": 3,
+    "n_test": 20,
+    "same_as_paper": false,
+    "baseline_is_papers_method": false
+  },
+  "metric_name": "mean environment steps to first goal on held-out evaluation seeds (lower is better; capped at the step budget)",
+  "higher_is_better": false,
+  "baseline": "Tabular Q-learning; actions chosen by argmax of running mean |TD error| per state-action pair (stand-in for SEE's error-seeking objective), eps=0.05.",
+  "improved": "Same agent, but each state-action pair keeps a TD-error history; pairs whose |TD error| stays high without decaying are flagged stuck and their exploration value is capped at the median visited value.",
+  "metrics": {
+    "baseline_score": 136.45000000000002,
+    "improved_score": 208.1,
+    "improvement": -71.64999999999998,
+    "baseline_score_std": 31.474619404635643,
+    "improved_score_std": 133.77916504448666,
+    "baseline_train_steps": 113.77777777777777,
+    "improved_train_steps": 107.33333333333333,
+    "baseline_stuck_frac": 0.2572533333333333,
+    "improved_stuck_frac": 0.12997333333333333,
+    "baseline_greedy_return": 4.386404906831103,
+    "improved_greedy_return": 8.353428337188227
+  },
+  "notes": "Simulated toy environment; tabular Q-learning, not SAC with neural networks, so this is only a stand-in for SEE. Hyperparameters were fixed a priori and not tuned, so no cross-validation selection was needed; the held-out evaluation seeds were used once for the final scores. Steps are censored at the step budget. Only three agent seeds; no significance test. The stuck detector thresholds are design choices and results may not favour the improved variant."
+}
